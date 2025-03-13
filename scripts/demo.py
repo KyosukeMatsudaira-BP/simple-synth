@@ -1,7 +1,9 @@
 """
-Tkinter GUI + MIDI/PCキーボード入力で操作するポリフォニックシンセ (LFO 追加版)
-- ADSR（Amp Envelope）とフィルタカットオフ、レゾナンス、さらに LFO（振幅：ビブラート）をスライダーで調整
+Tkinter GUI + MIDI/PCキーボード入力で操作するポリフォニックシンセ (LFO 追加版・オシレーター拡張)
+- ADSR（Amp Envelope）とフィルタカットオフ、レゾナンス、LFO、さらにノイズ（ホワイト／ピンク）をスライダーで調整
 - オシレーターの波形種別（sine, triangle, square, sawtooth）を選択可能
+- ノイズと通常波形の混合比を調整できる（noise_mix）
+- 矩形波のデューティー比 (duty_cycle) も調整可能
 - オンスクリーン鍵盤、PCキーボード、MIDI キーボードからの入力で音を出す
 - 同時発音数（ポリフォニック）はデフォルト6音
 
@@ -10,7 +12,7 @@ Tkinter GUI + MIDI/PCキーボード入力で操作するポリフォニック�
 ※ tkinter は標準ライブラリです。
 """
 
-import math, threading, time
+import math, threading, time, random
 from typing import Any
 import numpy as np
 import sounddevice as sd
@@ -31,14 +33,13 @@ SAMPLE_RATE = 44100
 # ---------------------------
 class LFO:
     def __init__(self, rate=5.0, depth=0.0, sample_rate=SAMPLE_RATE):
-        self.rate = rate          # LFO の周波数（Hz）
-        self.depth = depth        # LFO の深さ（周波数変調率、例えば 0.01 = ±1%）
+        self.rate = rate          # LFO 周波数 (Hz)
+        self.depth = depth        # LFO 深さ（例えば 0.01=±1% の変調）
         self.phase = 0.0
         self.sample_rate = sample_rate
 
     def process(self) -> float:
-        # サイン波 LFO
-        value = math.sin(self.phase)
+        value = math.sin(self.phase)  # -1 ～ 1 の値
         self.phase += (2.0 * math.pi * self.rate) / self.sample_rate
         if self.phase >= 2.0 * math.pi:
             self.phase -= 2.0 * math.pi
@@ -108,6 +109,15 @@ class SimpleSynth:
         self.phase = 0.0
         self.frequency = 0.0
         self.osc_type = "sine"  # "sine", "triangle", "square", "sawtooth"
+        
+        # 矩形波用デューティー比
+        self.duty_cycle = 0.5
+
+        # ノイズ系パラメータ
+        self.noise_mix = 0.0    # 0.0: 波形のみ, 1.0: ノイズのみ
+        self.noise_type = "white"  # "white" or "pink"
+        # ピンクノイズ用内部状態
+        self.pink_b0 = self.pink_b1 = self.pink_b2 = self.pink_b3 = self.pink_b4 = self.pink_b5 = self.pink_b6 = 0.0
 
         # フィルタ（1次ローパス）内部状態
         self.y_prev = 0.0
@@ -119,7 +129,7 @@ class SimpleSynth:
         # カットオフスムージング用
         self.smoothed_cutoff = self.cutoff
 
-        # LFO（振幅：ビブラート）を追加
+        # LFO（ビブラート用）
         self.lfo = LFO(rate=5.0, depth=0.0, sample_rate=SAMPLE_RATE)
 
     def note_on(self, note_number: int):
@@ -174,6 +184,12 @@ class SimpleSynth:
     def set_lfo_depth(self, depth: float):
         self.lfo.depth = depth
 
+    def set_noise_mix(self, mix: float):
+        self.noise_mix = mix
+
+    def set_duty_cycle(self, duty: float):
+        self.duty_cycle = duty
+
     def adsr_process(self) -> float:
         if self.env_state == 'idle':
             return 0.0
@@ -205,33 +221,59 @@ class SimpleSynth:
             self.env_state = 'sustain'
 
     def oscillator(self) -> float:
-        # LFOによる振幅モジュレーション（ビブラート：周波数変動）を適用
-        lfo_value = self.lfo.process()  # -1～1
-        modulated_freq = self.frequency * (1 + self.lfo.depth * lfo_value)
-        # ここで選択された波形を生成
+        # LFO を使って周波数をモジュレート（ビブラート）
+        lfo_val = self.lfo.process()  # -1～1 の値
+        modulated_freq = self.frequency * (1 + self.lfo.depth * lfo_val)
+        
+        # 選択された波形を生成
         if self.osc_type == "sine":
-            sample = math.sin(self.phase)
+            waveform = math.sin(self.phase)
         elif self.osc_type == "triangle":
-            sample = 2 * abs(2 * ((self.phase / (2 * math.pi)) - math.floor(self.phase / (2 * math.pi) + 0.5))) - 1
+            waveform = 2 * abs(2 * ((self.phase / (2 * math.pi)) - math.floor(self.phase / (2 * math.pi) + 0.5))) - 1
         elif self.osc_type == "square":
-            sample = 1.0 if math.sin(self.phase) >= 0 else -1.0
+            # duty_cycle を用いて矩形波を生成
+            if (self.phase / (2 * math.pi)) < self.duty_cycle:
+                waveform = 1.0
+            else:
+                waveform = -1.0
         elif self.osc_type == "sawtooth":
-            sample = 2 * (self.phase / (2 * math.pi)) - 1
+            waveform = 2 * (self.phase / (2 * math.pi)) - 1
         else:
-            sample = math.sin(self.phase)
-        # 位相進行に modulated_freq を使用
+            waveform = math.sin(self.phase)
+        
+        # 位相更新にモジュレートされた周波数を使用
         phase_inc = (2.0 * math.pi * modulated_freq) / SAMPLE_RATE
         self.phase += phase_inc
         if self.phase >= 2.0 * math.pi:
             self.phase -= 2.0 * math.pi
-        return sample
+
+        # ノイズ生成
+        if self.noise_type == "white":
+            noise = random.uniform(-1, 1)
+        elif self.noise_type == "pink":
+            white = random.uniform(-1, 1)
+            self.pink_b0 = 0.99886 * self.pink_b0 + white * 0.0555179
+            self.pink_b1 = 0.99332 * self.pink_b1 + white * 0.0750759
+            self.pink_b2 = 0.96900 * self.pink_b2 + white * 0.1538520
+            self.pink_b3 = 0.86650 * self.pink_b3 + white * 0.3104856
+            self.pink_b4 = 0.55000 * self.pink_b4 + white * 0.5329522
+            self.pink_b5 = -0.7616 * self.pink_b5 - white * 0.0168980
+            noise = (self.pink_b0 + self.pink_b1 + self.pink_b2 +
+                     self.pink_b3 + self.pink_b4 + self.pink_b5 + self.pink_b6 +
+                     white * 0.5362)
+            self.pink_b6 = white * 0.115926
+        else:
+            noise = 0.0
+
+        # 波形とノイズのミックス
+        mixed_wave = (1 - self.noise_mix) * waveform + self.noise_mix * noise
+        return mixed_wave
 
     def filter_process(self, x: float, cutoff: float) -> float:
         if cutoff < 20:
             cutoff = 20
         elif cutoff > SAMPLE_RATE / 2:
             cutoff = SAMPLE_RATE / 2
-        # スムージング：急激な変化を緩和（係数0.01）
         smoothing_factor = 0.01
         self.smoothed_cutoff += smoothing_factor * (cutoff - self.smoothed_cutoff)
         cutoff_used = self.smoothed_cutoff
@@ -261,6 +303,9 @@ class Voice:
         self.synth.set_resonance(master_params.get("resonance", 0.0))
         self.synth.set_lfo_rate(master_params.get("lfo_rate", 5.0))
         self.synth.set_lfo_depth(master_params.get("lfo_depth", 0.0))
+        self.synth.noise_type = master_params.get("noise_type", "white")
+        self.synth.set_noise_mix(master_params.get("noise_mix", 0.0))
+        self.synth.set_duty_cycle(master_params.get("duty_cycle", 0.5))
         self.start_time = time.time()
         self.active = True
         self.synth.note_on(note_number)
@@ -283,7 +328,6 @@ class PolySynth:
         self.max_voices = max_voices
         self.voices = []
         self.sample_rate = sample_rate
-        # マスターパラメータ
         self.attack = 0.1
         self.decay = 0.2
         self.sustain = 0.7
@@ -293,6 +337,9 @@ class PolySynth:
         self.resonance = 0.0
         self.lfo_rate = 5.0
         self.lfo_depth = 0.0
+        self.noise_mix = 0.0
+        self.duty_cycle = 0.5
+        self.noise_type = "white"
 
     def update_parameters(self):
         for voice in self.voices:
@@ -302,6 +349,9 @@ class PolySynth:
             voice.synth.set_resonance(self.resonance)
             voice.synth.set_lfo_rate(self.lfo_rate)
             voice.synth.set_lfo_depth(self.lfo_depth)
+            voice.synth.set_noise_mix(self.noise_mix)
+            voice.synth.set_duty_cycle(self.duty_cycle)
+            voice.synth.noise_type = self.noise_type
 
     def set_attack(self, a: float):
         self.attack = a
@@ -330,6 +380,15 @@ class PolySynth:
     def set_lfo_depth(self, depth: float):
         self.lfo_depth = depth
         self.update_parameters()
+    def set_noise_mix(self, mix: float):
+        self.noise_mix = mix
+        self.update_parameters()
+    def set_duty_cycle(self, duty: float):
+        self.duty_cycle = duty
+        self.update_parameters()
+    def set_noise_type(self, ntype: str):
+        self.noise_type = ntype
+        self.update_parameters()
 
     def note_on(self, note_number: int):
         for voice in self.voices:
@@ -345,7 +404,10 @@ class PolySynth:
             "osc_type": self.osc_type,
             "resonance": self.resonance,
             "lfo_rate": self.lfo_rate,
-            "lfo_depth": self.lfo_depth
+            "lfo_depth": self.lfo_depth,
+            "noise_mix": self.noise_mix,
+            "duty_cycle": self.duty_cycle,
+            "noise_type": self.noise_type
         }
         if len(self.voices) < self.max_voices:
             new_voice = Voice(note_number, master_params, self.sample_rate)
@@ -392,7 +454,7 @@ class SynthGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Polyphonic Synth")
-        self.geometry("400x700")
+        self.geometry("400x750")
         self.create_controls()
         self.create_keyboard()
         self.bind("<KeyPress>", self.on_key_press)
@@ -458,6 +520,21 @@ class SynthGUI(tk.Tk):
         self.osc_var = tk.StringVar(value=poly_synth.osc_type)
         osc_menu = tk.OptionMenu(osc_frame, self.osc_var, *self.osc_types, command=self.update_osc_type)
         osc_menu.grid(row=0, column=1)
+        ttk.Label(osc_frame, text="Noise Mix").grid(row=1, column=0, sticky="w")
+        self.noise_mix_var = tk.DoubleVar(value=poly_synth.noise_mix)
+        noise_mix_slider = tk.Scale(osc_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
+                                    variable=self.noise_mix_var, command=self.update_noise_mix)
+        noise_mix_slider.grid(row=1, column=1)
+        ttk.Label(osc_frame, text="Duty Cycle").grid(row=2, column=0, sticky="w")
+        self.duty_cycle_var = tk.DoubleVar(value=poly_synth.duty_cycle)
+        duty_cycle_slider = tk.Scale(osc_frame, from_=0.1, to=0.9, resolution=0.01, orient=tk.HORIZONTAL,
+                                     variable=self.duty_cycle_var, command=self.update_duty_cycle)
+        duty_cycle_slider.grid(row=2, column=1)
+        ttk.Label(osc_frame, text="Noise Type").grid(row=3, column=0, sticky="w")
+        self.noise_types = ["white", "pink"]
+        self.noise_type_var = tk.StringVar(value=poly_synth.noise_type)
+        noise_menu = tk.OptionMenu(osc_frame, self.noise_type_var, *self.noise_types, command=self.update_noise_type)
+        noise_menu.grid(row=3, column=1)
 
         # LFO セクション
         lfo_frame = ttk.LabelFrame(container, text="LFO (Vibrato)")
@@ -507,6 +584,12 @@ class SynthGUI(tk.Tk):
         poly_synth.set_lfo_rate(float(val))
     def update_lfo_depth(self, val):
         poly_synth.set_lfo_depth(float(val))
+    def update_noise_mix(self, val):
+        poly_synth.set_noise_mix(float(val))
+    def update_duty_cycle(self, val):
+        poly_synth.set_duty_cycle(float(val))
+    def update_noise_type(self, val):
+        poly_synth.set_noise_type(val)
 
     # オンスクリーン鍵盤
     def on_note_press(self, note):
@@ -553,7 +636,7 @@ def midi_input_thread():
         print("MIDI input error:", e)
 
 # ---------------------------
-# メイン関数
+# オーディオコールバック（PolySynth版）
 # ---------------------------
 def audio_callback(outdata: np.ndarray, frames: int, time_info, status) -> None:
     if status:
@@ -562,6 +645,9 @@ def audio_callback(outdata: np.ndarray, frames: int, time_info, status) -> None:
     for i in range(frames):
         outdata[i, 0] = poly_synth.process()
 
+# ---------------------------
+# メイン関数
+# ---------------------------
 def main():
     stream = sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, blocksize=512, callback=audio_callback)
     stream.start()
