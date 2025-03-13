@@ -1,6 +1,6 @@
 """
-Tkinter GUI + MIDI/PCキーボード入力で操作するポリフォニックシンセ
-- ADSR (Attack, Decay, Sustain, Release) とフィルタカットオフ、レゾナンスをスライダーで調整
+Tkinter GUI + MIDI/PCキーボード入力で操作するポリフォニックシンセ (LFO 追加版)
+- ADSR（Amp Envelope）とフィルタカットオフ、レゾナンス、さらに LFO（振幅：ビブラート）をスライダーで調整
 - オシレーターの波形種別（sine, triangle, square, sawtooth）を選択可能
 - オンスクリーン鍵盤、PCキーボード、MIDI キーボードからの入力で音を出す
 - 同時発音数（ポリフォニック）はデフォルト6音
@@ -25,6 +25,24 @@ except ImportError:
     MIDI_AVAILABLE = False
 
 SAMPLE_RATE = 44100
+
+# ---------------------------
+# LFO クラス（低周波オシレーター）
+# ---------------------------
+class LFO:
+    def __init__(self, rate=5.0, depth=0.0, sample_rate=SAMPLE_RATE):
+        self.rate = rate          # LFO の周波数（Hz）
+        self.depth = depth        # LFO の深さ（周波数変調率、例えば 0.01 = ±1%）
+        self.phase = 0.0
+        self.sample_rate = sample_rate
+
+    def process(self) -> float:
+        # サイン波 LFO
+        value = math.sin(self.phase)
+        self.phase += (2.0 * math.pi * self.rate) / self.sample_rate
+        if self.phase >= 2.0 * math.pi:
+            self.phase -= 2.0 * math.pi
+        return value
 
 # ---------------------------
 # ResonantLPF クラス（レゾナンス付きバイクワッド低域通過フィルタ）
@@ -98,8 +116,11 @@ class SimpleSynth:
         self.resonance = 0.0
         self.filter = None
 
-        # カットオフのスムージング用
+        # カットオフスムージング用
         self.smoothed_cutoff = self.cutoff
+
+        # LFO（振幅：ビブラート）を追加
+        self.lfo = LFO(rate=5.0, depth=0.0, sample_rate=SAMPLE_RATE)
 
     def note_on(self, note_number: int):
         self.current_note = note_number
@@ -147,6 +168,12 @@ class SimpleSynth:
         else:
             self.filter = None
 
+    def set_lfo_rate(self, rate: float):
+        self.lfo.rate = rate
+
+    def set_lfo_depth(self, depth: float):
+        self.lfo.depth = depth
+
     def adsr_process(self) -> float:
         if self.env_state == 'idle':
             return 0.0
@@ -178,6 +205,10 @@ class SimpleSynth:
             self.env_state = 'sustain'
 
     def oscillator(self) -> float:
+        # LFOによる振幅モジュレーション（ビブラート：周波数変動）を適用
+        lfo_value = self.lfo.process()  # -1～1
+        modulated_freq = self.frequency * (1 + self.lfo.depth * lfo_value)
+        # ここで選択された波形を生成
         if self.osc_type == "sine":
             sample = math.sin(self.phase)
         elif self.osc_type == "triangle":
@@ -188,7 +219,8 @@ class SimpleSynth:
             sample = 2 * (self.phase / (2 * math.pi)) - 1
         else:
             sample = math.sin(self.phase)
-        phase_inc = (2.0 * math.pi * self.frequency) / SAMPLE_RATE
+        # 位相進行に modulated_freq を使用
+        phase_inc = (2.0 * math.pi * modulated_freq) / SAMPLE_RATE
         self.phase += phase_inc
         if self.phase >= 2.0 * math.pi:
             self.phase -= 2.0 * math.pi
@@ -199,7 +231,7 @@ class SimpleSynth:
             cutoff = 20
         elif cutoff > SAMPLE_RATE / 2:
             cutoff = SAMPLE_RATE / 2
-        # スムージング：急激な変化を緩和（係数を 0.01 に設定）
+        # スムージング：急激な変化を緩和（係数0.01）
         smoothing_factor = 0.01
         self.smoothed_cutoff += smoothing_factor * (cutoff - self.smoothed_cutoff)
         cutoff_used = self.smoothed_cutoff
@@ -227,6 +259,8 @@ class Voice:
         self.synth.set_cutoff(master_params.get("cutoff", 1000.0))
         self.synth.set_osc_type(master_params.get("osc_type", "sine"))
         self.synth.set_resonance(master_params.get("resonance", 0.0))
+        self.synth.set_lfo_rate(master_params.get("lfo_rate", 5.0))
+        self.synth.set_lfo_depth(master_params.get("lfo_depth", 0.0))
         self.start_time = time.time()
         self.active = True
         self.synth.note_on(note_number)
@@ -257,6 +291,8 @@ class PolySynth:
         self.cutoff = 1000.0
         self.osc_type = "sine"
         self.resonance = 0.0
+        self.lfo_rate = 5.0
+        self.lfo_depth = 0.0
 
     def update_parameters(self):
         for voice in self.voices:
@@ -264,33 +300,35 @@ class PolySynth:
             voice.synth.set_cutoff(self.cutoff)
             voice.synth.set_osc_type(self.osc_type)
             voice.synth.set_resonance(self.resonance)
+            voice.synth.set_lfo_rate(self.lfo_rate)
+            voice.synth.set_lfo_depth(self.lfo_depth)
 
     def set_attack(self, a: float):
         self.attack = a
         self.update_parameters()
-
     def set_decay(self, d: float):
         self.decay = d
         self.update_parameters()
-
     def set_sustain(self, s: float):
         self.sustain = s
         self.update_parameters()
-
     def set_release(self, r: float):
         self.release = r
         self.update_parameters()
-
     def set_cutoff(self, c: float):
         self.cutoff = c
         self.update_parameters()
-
     def set_osc_type(self, osc: str):
         self.osc_type = osc
         self.update_parameters()
-
     def set_resonance(self, res: float):
         self.resonance = res
+        self.update_parameters()
+    def set_lfo_rate(self, rate: float):
+        self.lfo_rate = rate
+        self.update_parameters()
+    def set_lfo_depth(self, depth: float):
+        self.lfo_depth = depth
         self.update_parameters()
 
     def note_on(self, note_number: int):
@@ -305,7 +343,9 @@ class PolySynth:
             "release": self.release,
             "cutoff": self.cutoff,
             "osc_type": self.osc_type,
-            "resonance": self.resonance
+            "resonance": self.resonance,
+            "lfo_rate": self.lfo_rate,
+            "lfo_depth": self.lfo_depth
         }
         if len(self.voices) < self.max_voices:
             new_voice = Voice(note_number, master_params, self.sample_rate)
@@ -352,7 +392,7 @@ class SynthGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Polyphonic Synth")
-        self.geometry("400x600")
+        self.geometry("400x700")
         self.create_controls()
         self.create_keyboard()
         self.bind("<KeyPress>", self.on_key_press)
@@ -373,7 +413,7 @@ class SynthGUI(tk.Tk):
         container.pack(pady=10)
 
         # ADSR セクション
-        adsr_frame = ttk.LabelFrame(container, text="ADSR")
+        adsr_frame = ttk.LabelFrame(container, text="ADSR (Amp Envelope)")
         adsr_frame.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         self.attack_var = tk.DoubleVar(value=poly_synth.attack)
         ttk.Label(adsr_frame, text="Attack").grid(row=0, column=0, sticky="w")
@@ -419,6 +459,20 @@ class SynthGUI(tk.Tk):
         osc_menu = tk.OptionMenu(osc_frame, self.osc_var, *self.osc_types, command=self.update_osc_type)
         osc_menu.grid(row=0, column=1)
 
+        # LFO セクション
+        lfo_frame = ttk.LabelFrame(container, text="LFO (Vibrato)")
+        lfo_frame.grid(row=3, column=0, padx=5, pady=5, sticky="ew")
+        ttk.Label(lfo_frame, text="Rate (Hz)").grid(row=0, column=0, sticky="w")
+        self.lfo_rate_var = tk.DoubleVar(value=poly_synth.lfo_rate)
+        lfo_rate_slider = tk.Scale(lfo_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL,
+                                   variable=self.lfo_rate_var, command=self.update_lfo_rate)
+        lfo_rate_slider.grid(row=0, column=1)
+        ttk.Label(lfo_frame, text="Depth").grid(row=1, column=0, sticky="w")
+        self.lfo_depth_var = tk.DoubleVar(value=poly_synth.lfo_depth)
+        lfo_depth_slider = tk.Scale(lfo_frame, from_=0.0, to=0.05, resolution=0.001, orient=tk.HORIZONTAL,
+                                    variable=self.lfo_depth_var, command=self.update_lfo_depth)
+        lfo_depth_slider.grid(row=1, column=1)
+
     def create_keyboard(self):
         kb_frame = tk.Frame(self)
         kb_frame.pack(pady=10)
@@ -449,6 +503,10 @@ class SynthGUI(tk.Tk):
         poly_synth.set_osc_type(val)
     def update_resonance(self, val):
         poly_synth.set_resonance(float(val))
+    def update_lfo_rate(self, val):
+        poly_synth.set_lfo_rate(float(val))
+    def update_lfo_depth(self, val):
+        poly_synth.set_lfo_depth(float(val))
 
     # オンスクリーン鍵盤
     def on_note_press(self, note):
@@ -497,6 +555,13 @@ def midi_input_thread():
 # ---------------------------
 # メイン関数
 # ---------------------------
+def audio_callback(outdata: np.ndarray, frames: int, time_info, status) -> None:
+    if status:
+        print("Audio status:", status)
+    outdata.fill(0.0)
+    for i in range(frames):
+        outdata[i, 0] = poly_synth.process()
+
 def main():
     stream = sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, blocksize=512, callback=audio_callback)
     stream.start()
