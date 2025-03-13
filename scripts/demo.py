@@ -1,26 +1,23 @@
 """
-Tkinter GUI + MIDI/PCキーボード入力で操作するポリフォニックシンセの最小例
-- ADSR (Attack, Decay, Sustain, Release) とフィルタカットオフをスライダーで調整
-- オンスクリーン鍵盤ボタン、PCキーボード、MIDIキーボードからの入力で音を出す
+Tkinter GUI + MIDI/PCキーボード入力で操作するポリフォニックシンセ
+- ADSR (Attack, Decay, Sustain, Release) とフィルタカットオフ、レゾナンスをスライダーで調整
 - オシレーターの波形種別（sine, triangle, square, sawtooth）を選択可能
+- オンスクリーン鍵盤、PCキーボード、MIDI キーボードからの入力で音を出す
 - 同時発音数（ポリフォニック）はデフォルト6音
-　
+
 必要なパッケージ:
     pip install sounddevice numpy tkinter mido python-rtmidi
-※ tkinter は通常標準ライブラリに含まれています。
+※ tkinter は標準ライブラリです。
 """
 
-import sys
-import math
-import threading
-import time
+import math, threading, time
 from typing import Any
 import numpy as np
 import sounddevice as sd
 import tkinter as tk
 from tkinter import ttk
 
-# MIDI 入力用ライブラリ（なければ MIDI 入力は無効）
+# MIDI 入力用ライブラリ（無ければ MIDI 入力は無効）
 try:
     import mido
     MIDI_AVAILABLE = True
@@ -29,12 +26,49 @@ except ImportError:
 
 SAMPLE_RATE = 44100
 
-# ============================
-# シンセ本体（単音シンセ）: SimpleSynth
-# ============================
+# ---------------------------
+# ResonantLPF クラス（レゾナンス付きバイクワッド低域通過フィルタ）
+# ---------------------------
+class ResonantLPF:
+    def __init__(self, sample_rate=SAMPLE_RATE, cutoff=1000.0, q=0.707):
+        self.sample_rate = sample_rate
+        self.cutoff = cutoff
+        self.q = q
+        self.b0 = self.b1 = self.b2 = self.a1 = self.a2 = 0.0
+        self.x1 = self.x2 = self.y1 = self.y2 = 0.0
+        self.update_coefficients()
+
+    def update_coefficients(self):
+        omega = 2 * math.pi * self.cutoff / self.sample_rate
+        alpha = math.sin(omega) / (2 * self.q)
+        cos_omega = math.cos(omega)
+        a0 = 1 + alpha
+        self.b0 = ((1 - cos_omega) / 2) / a0
+        self.b1 = (1 - cos_omega) / a0
+        self.b2 = ((1 - cos_omega) / 2) / a0
+        self.a1 = -2 * cos_omega / a0
+        self.a2 = (1 - alpha) / a0
+
+    def set_cutoff(self, cutoff: float):
+        self.cutoff = cutoff
+        self.update_coefficients()
+
+    def set_q(self, q: float):
+        self.q = q
+        self.update_coefficients()
+
+    def process(self, x: float) -> float:
+        y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2
+        self.x2, self.x1 = self.x1, x
+        self.y2, self.y1 = self.y1, y
+        return y
+
+# ---------------------------
+# SimpleSynth クラス（単音シンセ）
+# ---------------------------
 class SimpleSynth:
     def __init__(self):
-        # ADSR パラメータ
+        # ADSR パラメータ（アンプエンベロープ）
         self.attack = 0.1
         self.decay = 0.2
         self.sustain = 0.7
@@ -45,7 +79,7 @@ class SimpleSynth:
 
         # エンベロープ状態
         self.env_value = 0.0
-        self.env_state = 'idle'  # 'idle', 'attack', 'decay', 'sustain', 'release'
+        self.env_state = 'idle'  # idle, attack, decay, sustain, release
         self.env_inc = 0.0
         self.env_release_start = 0.0
 
@@ -55,11 +89,17 @@ class SimpleSynth:
         # オシレーター関連
         self.phase = 0.0
         self.frequency = 0.0
-        # オシレーターの波形種別 ("sine", "triangle", "square", "sawtooth")
-        self.osc_type = "sine"
+        self.osc_type = "sine"  # "sine", "triangle", "square", "sawtooth"
 
-        # フィルタ（1次ローパス）の内部状態
+        # フィルタ（1次ローパス）内部状態
         self.y_prev = 0.0
+
+        # レゾナンス（0.0なら非レゾナント）
+        self.resonance = 0.0
+        self.filter = None
+
+        # カットオフのスムージング用
+        self.smoothed_cutoff = self.cutoff
 
     def note_on(self, note_number: int):
         self.current_note = note_number
@@ -86,7 +126,6 @@ class SimpleSynth:
         self.frequency = freq
 
     def note2freq(self, note_number: int) -> float:
-        # A4 (MIDI 69) -> 440 Hz
         return 440.0 * (2.0 ** ((note_number - 69) / 12.0))
 
     def set_adsr(self, a: float, d: float, s: float, r: float):
@@ -99,8 +138,14 @@ class SimpleSynth:
         self.cutoff = cutoff
 
     def set_osc_type(self, osc_type: str):
-        # osc_type: "sine", "triangle", "square", "sawtooth"
         self.osc_type = osc_type
+
+    def set_resonance(self, res: float):
+        self.resonance = res
+        if self.resonance > 0:
+            self.filter = ResonantLPF(sample_rate=SAMPLE_RATE, cutoff=self.cutoff, q=self.resonance)
+        else:
+            self.filter = None
 
     def adsr_process(self) -> float:
         if self.env_state == 'idle':
@@ -133,7 +178,6 @@ class SimpleSynth:
             self.env_state = 'sustain'
 
     def oscillator(self) -> float:
-        # 波形生成
         if self.osc_type == "sine":
             sample = math.sin(self.phase)
         elif self.osc_type == "triangle":
@@ -155,25 +199,34 @@ class SimpleSynth:
             cutoff = 20
         elif cutoff > SAMPLE_RATE / 2:
             cutoff = SAMPLE_RATE / 2
-        alpha = 1.0 - math.exp(-2.0 * math.pi * cutoff / SAMPLE_RATE)
-        out = alpha * x + (1.0 - alpha) * self.y_prev
-        self.y_prev = out
-        return out
+        # スムージング：急激な変化を緩和（係数を 0.01 に設定）
+        smoothing_factor = 0.01
+        self.smoothed_cutoff += smoothing_factor * (cutoff - self.smoothed_cutoff)
+        cutoff_used = self.smoothed_cutoff
+        if self.resonance > 0 and self.filter is not None:
+            self.filter.set_cutoff(cutoff_used)
+            self.filter.set_q(self.resonance)
+            return self.filter.process(x)
+        else:
+            alpha = 1.0 - math.exp(-2.0 * math.pi * cutoff_used / SAMPLE_RATE)
+            out = alpha * x + (1.0 - alpha) * self.y_prev
+            self.y_prev = out
+            return out
 
-# ============================
-# Voice クラス：１つの発音（ノート）を管理
-# ============================
+# ---------------------------
+# Voice クラス：1つの発音を管理
+# ---------------------------
 class Voice:
     def __init__(self, note_number: int, master_params: dict, sample_rate=SAMPLE_RATE):
         self.note_number = note_number
-        # 新たにシンセ本体を生成し、マスターのパラメータをコピー
         self.synth = SimpleSynth()
-        self.synth.attack = master_params.get("attack", 0.1)
-        self.synth.decay = master_params.get("decay", 0.2)
-        self.synth.sustain = master_params.get("sustain", 0.7)
-        self.synth.release = master_params.get("release", 0.5)
-        self.synth.cutoff = master_params.get("cutoff", 1000.0)
-        self.synth.osc_type = master_params.get("osc_type", "sine")
+        self.synth.set_adsr(master_params.get("attack", 0.1),
+                           master_params.get("decay", 0.2),
+                           master_params.get("sustain", 0.7),
+                           master_params.get("release", 0.5))
+        self.synth.set_cutoff(master_params.get("cutoff", 1000.0))
+        self.synth.set_osc_type(master_params.get("osc_type", "sine"))
+        self.synth.set_resonance(master_params.get("resonance", 0.0))
         self.start_time = time.time()
         self.active = True
         self.synth.note_on(note_number)
@@ -188,30 +241,29 @@ class Voice:
             self.active = False
         return filtered
 
-# ============================
-# PolySynth クラス：複数の Voice を管理（ポリフォニック化）
-# ============================
+# ---------------------------
+# PolySynth クラス：複数 Voice の管理（ポリフォニック化）
+# ---------------------------
 class PolySynth:
     def __init__(self, max_voices=6, sample_rate=SAMPLE_RATE):
         self.max_voices = max_voices
-        self.voices = []  # Voice のリスト
+        self.voices = []
         self.sample_rate = sample_rate
-        # マスターパラメータ（GUIからの更新で変更される）
+        # マスターパラメータ
         self.attack = 0.1
         self.decay = 0.2
         self.sustain = 0.7
         self.release = 0.5
         self.cutoff = 1000.0
         self.osc_type = "sine"
+        self.resonance = 0.0
 
     def update_parameters(self):
         for voice in self.voices:
-            voice.synth.attack = self.attack
-            voice.synth.decay = self.decay
-            voice.synth.sustain = self.sustain
-            voice.synth.release = self.release
-            voice.synth.cutoff = self.cutoff
-            voice.synth.osc_type = self.osc_type
+            voice.synth.set_adsr(self.attack, self.decay, self.sustain, self.release)
+            voice.synth.set_cutoff(self.cutoff)
+            voice.synth.set_osc_type(self.osc_type)
+            voice.synth.set_resonance(self.resonance)
 
     def set_attack(self, a: float):
         self.attack = a
@@ -237,26 +289,28 @@ class PolySynth:
         self.osc_type = osc
         self.update_parameters()
 
+    def set_resonance(self, res: float):
+        self.resonance = res
+        self.update_parameters()
+
     def note_on(self, note_number: int):
-        # すでに同じノートが鳴っていればリトリガー
         for voice in self.voices:
             if voice.note_number == note_number and voice.active:
                 voice.synth.note_on(note_number)
                 return
-        # 空いている場合は新たにVoiceを追加
         master_params = {
             "attack": self.attack,
             "decay": self.decay,
             "sustain": self.sustain,
             "release": self.release,
             "cutoff": self.cutoff,
-            "osc_type": self.osc_type
+            "osc_type": self.osc_type,
+            "resonance": self.resonance
         }
         if len(self.voices) < self.max_voices:
             new_voice = Voice(note_number, master_params, self.sample_rate)
             self.voices.append(new_voice)
         else:
-            # 全てのVoiceが使われている場合、古いものを奪う（Voice stealing）
             oldest_voice = min(self.voices, key=lambda v: v.start_time)
             oldest_voice.note_off()
             oldest_voice.synth.note_on(note_number)
@@ -276,15 +330,14 @@ class PolySynth:
             if voice.active:
                 active_voices.append(voice)
         self.voices = active_voices
-        # ミキシング：複数Voiceの合計を平均化（クリッピング防止）
         return sample_sum / max(1, self.max_voices)
 
 # グローバルな PolySynth インスタンス（デフォルト6音）
 poly_synth = PolySynth(max_voices=6, sample_rate=SAMPLE_RATE)
 
-# ============================
+# ---------------------------
 # オーディオコールバック（PolySynth版）
-# ============================
+# ---------------------------
 def audio_callback(outdata: np.ndarray, frames: int, time_info, status) -> None:
     if status:
         print("Audio status:", status)
@@ -292,9 +345,9 @@ def audio_callback(outdata: np.ndarray, frames: int, time_info, status) -> None:
     for i in range(frames):
         outdata[i, 0] = poly_synth.process()
 
-# ============================
+# ---------------------------
 # Tkinter GUI部分
-# ============================
+# ---------------------------
 class SynthGUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -302,11 +355,8 @@ class SynthGUI(tk.Tk):
         self.geometry("400x600")
         self.create_controls()
         self.create_keyboard()
-
-        # PCキーボード入力（ウィンドウ全体で受け付ける）
         self.bind("<KeyPress>", self.on_key_press)
         self.bind("<KeyRelease>", self.on_key_release)
-        # PCキーボード用のキー割り当て例
         self.pc_key_map = {
             'z': 60,
             'x': 62,
@@ -319,67 +369,70 @@ class SynthGUI(tk.Tk):
         self.active_keys = set()
 
     def create_controls(self):
-        frame = tk.Frame(self)
-        frame.pack(pady=10)
+        container = tk.Frame(self)
+        container.pack(pady=10)
 
-        # ADSR スライダー群
+        # ADSR セクション
+        adsr_frame = ttk.LabelFrame(container, text="ADSR")
+        adsr_frame.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         self.attack_var = tk.DoubleVar(value=poly_synth.attack)
-        tk.Label(frame, text="Attack").grid(row=0, column=0, sticky="w")
-        attack_slider = tk.Scale(frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
+        ttk.Label(adsr_frame, text="Attack").grid(row=0, column=0, sticky="w")
+        attack_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
                                  variable=self.attack_var, command=self.update_attack)
         attack_slider.grid(row=0, column=1)
-
         self.decay_var = tk.DoubleVar(value=poly_synth.decay)
-        tk.Label(frame, text="Decay").grid(row=1, column=0, sticky="w")
-        decay_slider = tk.Scale(frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
+        ttk.Label(adsr_frame, text="Decay").grid(row=1, column=0, sticky="w")
+        decay_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
                                 variable=self.decay_var, command=self.update_decay)
         decay_slider.grid(row=1, column=1)
-
         self.sustain_var = tk.DoubleVar(value=poly_synth.sustain)
-        tk.Label(frame, text="Sustain").grid(row=2, column=0, sticky="w")
-        sustain_slider = tk.Scale(frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
+        ttk.Label(adsr_frame, text="Sustain").grid(row=2, column=0, sticky="w")
+        sustain_slider = tk.Scale(adsr_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
                                   variable=self.sustain_var, command=self.update_sustain)
         sustain_slider.grid(row=2, column=1)
-
         self.release_var = tk.DoubleVar(value=poly_synth.release)
-        tk.Label(frame, text="Release").grid(row=3, column=0, sticky="w")
-        release_slider = tk.Scale(frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
+        ttk.Label(adsr_frame, text="Release").grid(row=3, column=0, sticky="w")
+        release_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
                                   variable=self.release_var, command=self.update_release)
         release_slider.grid(row=3, column=1)
 
-        # Filter Cutoff スライダー
+        # Filter セクション
+        filter_frame = ttk.LabelFrame(container, text="Filter")
+        filter_frame.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
         self.cutoff_var = tk.DoubleVar(value=poly_synth.cutoff)
-        tk.Label(frame, text="Cutoff (Hz)").grid(row=4, column=0, sticky="w")
-        cutoff_slider = tk.Scale(frame, from_=20.0, to=5000.0, resolution=1, orient=tk.HORIZONTAL,
+        ttk.Label(filter_frame, text="Cutoff (Hz)").grid(row=0, column=0, sticky="w")
+        cutoff_slider = tk.Scale(filter_frame, from_=20.0, to=5000.0, resolution=1, orient=tk.HORIZONTAL,
                                  variable=self.cutoff_var, command=self.update_cutoff)
-        cutoff_slider.grid(row=4, column=1)
+        cutoff_slider.grid(row=0, column=1)
+        ttk.Label(filter_frame, text="Resonance").grid(row=1, column=0, sticky="w")
+        self.resonance_var = tk.DoubleVar(value=poly_synth.resonance)
+        resonance_slider = tk.Scale(filter_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL,
+                                    variable=self.resonance_var, command=self.update_resonance)
+        resonance_slider.grid(row=1, column=1)
 
-        # オシレーター選択 (OptionMenu)
-        tk.Label(frame, text="Oscillator").grid(row=5, column=0, sticky="w")
+        # Oscillator セクション
+        osc_frame = ttk.LabelFrame(container, text="Oscillator")
+        osc_frame.grid(row=2, column=0, padx=5, pady=5, sticky="ew")
+        ttk.Label(osc_frame, text="Waveform").grid(row=0, column=0, sticky="w")
         self.osc_types = ["sine", "triangle", "square", "sawtooth"]
         self.osc_var = tk.StringVar(value=poly_synth.osc_type)
-        osc_menu = tk.OptionMenu(frame, self.osc_var, *self.osc_types, command=self.update_osc_type)
-        osc_menu.grid(row=5, column=1)
+        osc_menu = tk.OptionMenu(osc_frame, self.osc_var, *self.osc_types, command=self.update_osc_type)
+        osc_menu.grid(row=0, column=1)
 
     def create_keyboard(self):
         kb_frame = tk.Frame(self)
-        kb_frame.pack(pady=20)
-        # オンスクリーン鍵盤（例: C, D, E, F, G, A, B）
+        kb_frame.pack(pady=10)
+        kb_section = ttk.LabelFrame(kb_frame, text="Keyboard")
+        kb_section.pack()
         self.key_buttons = {}
         notes = [60, 62, 64, 65, 67, 69, 71]
         labels = ["C", "D", "E", "F", "G", "A", "B"]
-        self.button_vars = {}
         for i, note in enumerate(notes):
-            var = tk.IntVar(value=0)
-            btn = tk.Checkbutton(
-                kb_frame, text=labels[i], width=4,
-                variable=var, indicatoron=False
-            )
+            btn = tk.Button(kb_section, text=labels[i], width=4, relief=tk.RAISED, activebackground="red")
             btn.grid(row=0, column=i, padx=5)
             btn.bind("<ButtonPress-1>", lambda event, n=note: self.on_note_press(n))
             btn.bind("<ButtonRelease-1>", lambda event, n=note: self.on_note_release(n))
             self.key_buttons[note] = btn
-            self.button_vars[note] = var
 
     # スライダー更新コールバック
     def update_attack(self, val):
@@ -394,6 +447,8 @@ class SynthGUI(tk.Tk):
         poly_synth.set_cutoff(float(val))
     def update_osc_type(self, val):
         poly_synth.set_osc_type(val)
+    def update_resonance(self, val):
+        poly_synth.set_resonance(float(val))
 
     # オンスクリーン鍵盤
     def on_note_press(self, note):
@@ -415,9 +470,9 @@ class SynthGUI(tk.Tk):
             note = self.pc_key_map[key]
             poly_synth.note_off(note)
 
-# ============================
+# ---------------------------
 # MIDI入力用スレッド
-# ============================
+# ---------------------------
 def midi_input_thread():
     if not MIDI_AVAILABLE:
         print("MIDI input not available.")
@@ -439,20 +494,17 @@ def midi_input_thread():
     except Exception as e:
         print("MIDI input error:", e)
 
-# ============================
+# ---------------------------
 # メイン関数
-# ============================
+# ---------------------------
 def main():
     stream = sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, blocksize=512, callback=audio_callback)
     stream.start()
-
     if MIDI_AVAILABLE:
         midi_thread = threading.Thread(target=midi_input_thread, daemon=True)
         midi_thread.start()
-
     app = SynthGUI()
     app.mainloop()
-
     stream.stop()
     stream.close()
 
