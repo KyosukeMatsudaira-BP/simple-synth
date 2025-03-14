@@ -141,52 +141,8 @@ class SynthGUI(tk.Tk):
     def create_controls(self, parent):
         container = ttk.LabelFrame(parent, text="コントロール", style="My.TLabelframe")
         container.pack(fill="both", expand=True, padx=5, pady=5)
-        adsr_frame = ttk.LabelFrame(container, text="ADSR（アンプエンベロープ）", style="My.TLabelframe")
-        adsr_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        self.attack_var = tk.DoubleVar(value=self.poly_synth.attack)
-        ttk.Label(adsr_frame, text="アタック", style="My.TLabel").grid(row=0, column=0, sticky="w")
-        attack_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
-                                 length=350, variable=self.attack_var,
-                                 font=("Arial", self.font_size),
-                                 command=lambda val: self.poly_synth.set_attack(float(val)))
-        attack_slider.grid(row=0, column=1)
-        self.decay_var = tk.DoubleVar(value=self.poly_synth.decay)
-        ttk.Label(adsr_frame, text="ディケイ", style="My.TLabel").grid(row=1, column=0, sticky="w")
-        decay_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
-                                length=350, variable=self.decay_var,
-                                font=("Arial", self.font_size),
-                                command=lambda val: self.poly_synth.set_decay(float(val)))
-        decay_slider.grid(row=1, column=1)
-        self.sustain_var = tk.DoubleVar(value=self.poly_synth.sustain)
-        ttk.Label(adsr_frame, text="サステイン", style="My.TLabel").grid(row=2, column=0, sticky="w")
-        sustain_slider = tk.Scale(adsr_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
-                                  length=350, variable=self.sustain_var,
-                                  font=("Arial", self.font_size),
-                                  command=lambda val: self.poly_synth.set_sustain(float(val)))
-        sustain_slider.grid(row=2, column=1)
-        self.release_var = tk.DoubleVar(value=self.poly_synth.release)
-        ttk.Label(adsr_frame, text="リリース", style="My.TLabel").grid(row=3, column=0, sticky="w")
-        release_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
-                                  length=350, variable=self.release_var,
-                                  font=("Arial", self.font_size),
-                                  command=lambda val: self.poly_synth.set_release(float(val)))
-        release_slider.grid(row=3, column=1)
-        filter_frame = ttk.LabelFrame(container, text="フィルター", style="My.TLabelframe")
-        filter_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        self.cutoff_var = tk.DoubleVar(value=self.poly_synth.cutoff)
-        ttk.Label(filter_frame, text="カットオフ（Hz）", style="My.TLabel").grid(row=0, column=0, sticky="w")
-        cutoff_slider = tk.Scale(filter_frame, from_=20.0, to=5000.0, resolution=1, orient=tk.HORIZONTAL,
-                                 length=350, variable=self.cutoff_var,
-                                 font=("Arial", self.font_size),
-                                 command=lambda val: self.poly_synth.set_cutoff(float(val)))
-        cutoff_slider.grid(row=0, column=1)
-        ttk.Label(filter_frame, text="レゾナンス", style="My.TLabel").grid(row=1, column=0, sticky="w")
-        self.resonance_var = tk.DoubleVar(value=self.poly_synth.resonance)
-        resonance_slider = tk.Scale(filter_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL,
-                                    length=350, variable=self.resonance_var,
-                                    font=("Arial", self.font_size),
-                                    command=lambda val: self.poly_synth.set_resonance(float(val)))
-        resonance_slider.grid(row=1, column=1)
+
+        # オシレーター
         osc_frame = ttk.LabelFrame(container, text="オシレーター", style="My.TLabelframe")
         osc_frame.pack(fill="both", expand=True, padx=5, pady=5)
         ttk.Label(osc_frame, text="波形種別", style="My.TLabel").grid(row=0, column=0, sticky="w")
@@ -219,7 +175,59 @@ class SynthGUI(tk.Tk):
                                    command=lambda val: self.poly_synth.set_noise_type(self.noise_type_map[val]))
         noise_menu.config(width=12, font=("Arial", self.font_size))
         noise_menu.grid(row=3, column=1)
-        lfo_frame = ttk.LabelFrame(container, text="LFO（ビブラート）", style="My.TLabelframe")
+
+        # フィルター
+        filter_frame = ttk.LabelFrame(container, text="フィルター", style="My.TLabelframe")
+        filter_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.cutoff_var = tk.DoubleVar(value=self.poly_synth.cutoff)
+        ttk.Label(filter_frame, text="カットオフ（Hz）", style="My.TLabel").grid(row=0, column=0, sticky="w")
+        cutoff_slider = tk.Scale(filter_frame, from_=20.0, to=5000.0, resolution=1, orient=tk.HORIZONTAL,
+                                 length=350, variable=self.cutoff_var,
+                                 font=("Arial", self.font_size),
+                                 command=lambda val: self.poly_synth.set_cutoff(float(val)))
+        cutoff_slider.grid(row=0, column=1)
+        ttk.Label(filter_frame, text="レゾナンス", style="My.TLabel").grid(row=1, column=0, sticky="w")
+        self.resonance_var = tk.DoubleVar(value=self.poly_synth.resonance)
+        resonance_slider = tk.Scale(filter_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL,
+                                    length=350, variable=self.resonance_var,
+                                    font=("Arial", self.font_size),
+                                    command=lambda val: self.poly_synth.set_resonance(float(val)))
+        resonance_slider.grid(row=1, column=1)
+
+        # ADSR（アンプエンベロープ）
+        adsr_frame = ttk.LabelFrame(container, text="ADSR（アンプエンベロープ）", style="My.TLabelframe")
+        adsr_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.attack_var = tk.DoubleVar(value=self.poly_synth.attack)
+        ttk.Label(adsr_frame, text="アタック", style="My.TLabel").grid(row=0, column=0, sticky="w")
+        attack_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
+                                 length=350, variable=self.attack_var,
+                                 font=("Arial", self.font_size),
+                                 command=lambda val: self.poly_synth.set_attack(float(val)))
+        attack_slider.grid(row=0, column=1)
+        self.decay_var = tk.DoubleVar(value=self.poly_synth.decay)
+        ttk.Label(adsr_frame, text="ディケイ", style="My.TLabel").grid(row=1, column=0, sticky="w")
+        decay_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
+                                length=350, variable=self.decay_var,
+                                font=("Arial", self.font_size),
+                                command=lambda val: self.poly_synth.set_decay(float(val)))
+        decay_slider.grid(row=1, column=1)
+        self.sustain_var = tk.DoubleVar(value=self.poly_synth.sustain)
+        ttk.Label(adsr_frame, text="サステイン", style="My.TLabel").grid(row=2, column=0, sticky="w")
+        sustain_slider = tk.Scale(adsr_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
+                                  length=350, variable=self.sustain_var,
+                                  font=("Arial", self.font_size),
+                                  command=lambda val: self.poly_synth.set_sustain(float(val)))
+        sustain_slider.grid(row=2, column=1)
+        self.release_var = tk.DoubleVar(value=self.poly_synth.release)
+        ttk.Label(adsr_frame, text="リリース", style="My.TLabel").grid(row=3, column=0, sticky="w")
+        release_slider = tk.Scale(adsr_frame, from_=0.0, to=2.0, resolution=0.01, orient=tk.HORIZONTAL,
+                                  length=350, variable=self.release_var,
+                                  font=("Arial", self.font_size),
+                                  command=lambda val: self.poly_synth.set_release(float(val)))
+        release_slider.grid(row=3, column=1)
+        
+        # モジュレータ（ビブラート）
+        lfo_frame = ttk.LabelFrame(container, text="モジュレータ（ビブラート）", style="My.TLabelframe")
         lfo_frame.pack(fill="both", expand=True, padx=5, pady=5)
         ttk.Label(lfo_frame, text="レート（Hz）", style="My.TLabel").grid(row=0, column=0, sticky="w")
         self.lfo_rate_var = tk.DoubleVar(value=self.poly_synth.lfo_rate)
