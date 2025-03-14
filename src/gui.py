@@ -93,9 +93,9 @@ class SynthGUI(tk.Tk):
         self.poly_synth.set_noise_mix(0.0)
         self.poly_synth.set_lfo_depth(0.0)
         self.poly_synth.set_resonance(0.0)
-        self.poly_synth.set_attack(0.1)
+        self.poly_synth.set_attack(0.01)
         self.poly_synth.set_decay(0.2)
-        self.poly_synth.set_sustain(1.0)
+        self.poly_synth.set_sustain(0.5)
         self.poly_synth.set_release(0.5)
         self.poly_synth.set_cutoff(5000)
         # UI側の変数もリセット
@@ -107,7 +107,7 @@ class SynthGUI(tk.Tk):
         self.decay_var.set(0.2)
         self.sustain_var.set(0.5)
         self.release_var.set(0.5)
-        self.cutoff_var.set(1000)
+        self.cutoff_var.set(5000)
         self.lfo_rate_var.set(5.0)
         self.duty_cycle_var.set(0.5)
 
