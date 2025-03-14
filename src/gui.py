@@ -93,6 +93,12 @@ class SynthGUI(tk.Tk):
         self.poly_synth.set_noise_mix(0.0)
         self.poly_synth.set_lfo_depth(0.0)
         self.poly_synth.set_resonance(0.0)
+        self.poly_synth.set_attack(0.1)
+        self.poly_synth.set_decay(0.2)
+        self.poly_synth.set_sustain(1.0)
+        self.poly_synth.set_release(0.5)
+        self.poly_synth.set_cutoff(5000)
+        # UI側の変数もリセット
         self.osc_var.set("サイン波")
         self.noise_mix_var.set(0.0)
         self.lfo_depth_var.set(0.0)
