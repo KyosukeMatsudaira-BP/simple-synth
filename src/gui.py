@@ -349,27 +349,49 @@ class SynthGUI(tk.Tk):
         window = np.hamming(len(buf))
         fft_result = fft.rfft(buf * window)
         magnitude = np.abs(fft_result)
-        raw_db = 20 * np.log10(magnitude + 1e-6)
-        max_db = np.max(raw_db)
-        margin = 5.0
-        top = max_db + margin
-        bottom = top - 120
+        # 固定スケール: 0 dB（最大）～ -120 dB（最小）として計算
+        raw_db = 20 * np.log10(magnitude + 1e-6)  # ここで 0 dB がピークとする（通常は信号が正規化されている場合）
+        # 固定スケールなので、上限 0 dB, 下限 -120 dB をそのまま使う
+        fixed_top = 60.0
+        fixed_bottom = -60.0
+
         canvas_width = self.spectrum_width
         canvas_height = self.spectrum_height
-        margin_x = 25  # 全体の左右余白
-        xdata = np.linspace(margin_x, canvas_width - margin_x, len(fft_result))
-        ydata = canvas_height - ((raw_db - bottom) / (top - bottom) * canvas_height)
+
+        # 周波数軸を対数スケールにする
+        # 表示する周波数範囲（例: 20 Hz から 10000 Hz）
+        f_min = 20
+        f_max = 20000
+        # FFT の周波数軸
+        freqs = fft.rfftfreq(len(buf), 1.0 / SAMPLE_RATE)
+        # 対数スケール用の x 座標を生成
+        # まず、対象の周波数範囲に含まれるインデックスを抽出
+        valid_indices = np.where((freqs >= f_min) & (freqs <= f_max))[0]
+        # 対象となるフーリエ成分
+        freqs_valid = freqs[valid_indices]
+        # 対数スケールで x 座標を生成：margin_x を含める
+        margin_x = 20
+        xdata = margin_x + (np.log10(freqs_valid) - np.log10(f_min)) / (np.log10(f_max) - np.log10(f_min)) * (canvas_width - 2 * margin_x)
+        
+        # 固定スケールに従い、dB 値をキャンバスの y 座標にマッピング
+        # dB の値が fixed_top (0 dB) なら上端 (y=0)、fixed_bottom (-120 dB) なら下端 (y=canvas_height)
+        db_valid = raw_db[valid_indices]
+        ydata = canvas_height - ((db_valid - fixed_bottom) / (fixed_top - fixed_bottom)) * canvas_height
+
         points = []
         for x, y in zip(xdata, ydata):
             points.extend([x, y])
         self.spec_canvas.delete("all")
         self.spec_canvas.create_line(points, fill="yellow")
-        freqs = fft.rfftfreq(len(buf), 1.0 / SAMPLE_RATE)
-        max_disp_freq = 10000
-        for f in range(0, max_disp_freq+1, 2000):
-            x = margin_x + (f / max_disp_freq) * (canvas_width - 2 * margin_x)
+
+        # 目盛の描画
+        # 対数軸の目盛は、例えば10^(n) の形で表示するのも一案
+        for f in [20, 50, 100, 200, 500, 1000, 3000, 6000, 20000]:
+            if f < f_min or f > f_max:
+                continue
+            x = margin_x + (np.log10(f) - np.log10(f_min)) / (np.log10(f_max) - np.log10(f_min)) * (canvas_width - 2 * margin_x)
             self.spec_canvas.create_line(x, canvas_height, x, canvas_height-10, fill="white")
-            self.spec_canvas.create_text(x, canvas_height-15, text=f"{f}Hz", fill="white", font=("Arial", self.font_size), anchor="n")
+            self.spec_canvas.create_text(x, canvas_height-15, text=f"{f}", fill="white", font=("Arial", self.font_size), anchor="n")
         self.after(100, self.update_spectrum)
 
 if __name__ == "__main__":
