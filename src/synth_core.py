@@ -17,10 +17,24 @@ class SimpleSynth:
         self.env_inc = 0.0
         self.env_release_start = 0.0
         self.current_note = None
+        # OSC1 (既存)
         self.phase = 0.0
         self.frequency = 0.0
         self.osc_type = "sine"
         self.duty_cycle = 0.5
+        
+        # OSC2 (新規追加)
+        self.osc2_type = "sine"
+        self.osc2_phase = 0.0
+        self.osc2_level = 0.5
+        self.osc2_detune = 0.0  # セント単位 (-50 ~ +50)
+        self.osc_mix = 0.5  # 0.0=OSC1のみ, 1.0=OSC2のみ
+        
+        # OSC2専用エフェクト
+        self.osc2_filter_cutoff = 1000.0
+        self.osc2_filter_resonance = 0.0
+        self.osc2_filter = None
+        self.osc2_smoothed_cutoff = self.osc2_filter_cutoff
         self.noise_mix = 0.0
         self.noise_type = "white"
         self.pink_b0 = self.pink_b1 = self.pink_b2 = self.pink_b3 = self.pink_b4 = self.pink_b5 = self.pink_b6 = 0.0
@@ -65,6 +79,28 @@ class SimpleSynth:
 
     def set_osc_type(self, osc_type: str):
         self.osc_type = osc_type
+
+    def set_osc2_type(self, osc2_type: str):
+        self.osc2_type = osc2_type
+
+    def set_osc2_level(self, level: float):
+        self.osc2_level = level
+
+    def set_osc2_detune(self, detune: float):
+        self.osc2_detune = detune
+
+    def set_osc_mix(self, mix: float):
+        self.osc_mix = mix
+
+    def set_osc2_filter_cutoff(self, cutoff: float):
+        self.osc2_filter_cutoff = cutoff
+
+    def set_osc2_filter_resonance(self, res: float):
+        self.osc2_filter_resonance = res
+        if self.osc2_filter_resonance > 0:
+            self.osc2_filter = ResonantLPF(sample_rate=SAMPLE_RATE, cutoff=self.osc2_filter_cutoff, q=self.osc2_filter_resonance)
+        else:
+            self.osc2_filter = None
 
     def set_resonance(self, res: float):
         self.resonance = res
@@ -115,23 +151,54 @@ class SimpleSynth:
             self.env_value = self.sustain
             self.env_state = 'sustain'
 
+    def generate_waveform(self, osc_type: str, phase: float) -> float:
+        """指定された波形タイプと位相から波形を生成"""
+        if osc_type == "sine":
+            return math.sin(phase)
+        elif osc_type == "triangle":
+            return 2 * abs(2 * ((phase / (2 * math.pi)) - math.floor(phase / (2 * math.pi) + 0.5))) - 1
+        elif osc_type == "square":
+            return 1.0 if (phase / (2 * math.pi)) < self.duty_cycle else -1.0
+        elif osc_type == "sawtooth":
+            return 2 * (phase / (2 * math.pi)) - 1
+        else:
+            return math.sin(phase)
+
     def oscillator(self) -> float:
+        # LFO処理
         lfo_val = self.lfo.process()
         modulated_freq = self.frequency * (1 + self.lfo.depth * lfo_val)
-        if self.osc_type == "sine":
-            waveform = math.sin(self.phase)
-        elif self.osc_type == "triangle":
-            waveform = 2 * abs(2 * ((self.phase / (2 * math.pi)) - math.floor(self.phase / (2 * math.pi) + 0.5))) - 1
-        elif self.osc_type == "square":
-            waveform = 1.0 if (self.phase / (2 * math.pi)) < self.duty_cycle else -1.0
-        elif self.osc_type == "sawtooth":
-            waveform = 2 * (self.phase / (2 * math.pi)) - 1
-        else:
-            waveform = math.sin(self.phase)
+        
+        # OSC1波形生成
+        osc1_waveform = self.generate_waveform(self.osc_type, self.phase)
+        
+        # OSC2波形生成（デチューン適用）
+        detune_ratio = 2 ** (self.osc2_detune / 1200.0)  # セントを周波数比に変換
+        osc2_freq = modulated_freq * detune_ratio
+        osc2_waveform = self.generate_waveform(self.osc2_type, self.osc2_phase)
+        
+        # OSC2専用フィルター適用
+        osc2_filtered = self.osc2_filter_process(osc2_waveform, self.osc2_filter_cutoff)
+        
+        # オシレーターミックス（改良版）
+        # osc_mix: 0.0=OSC1のみ, 0.5=50:50, 1.0=OSC2のみ
+        osc1_level = (1.0 - self.osc_mix)
+        osc2_level_adjusted = self.osc_mix * self.osc2_level
+        mixed_waveform = (osc1_waveform * osc1_level) + (osc2_filtered * osc2_level_adjusted)
+        
+        # 位相更新
         phase_inc = (2.0 * math.pi * modulated_freq) / SAMPLE_RATE
         self.phase += phase_inc
         if self.phase >= 2.0 * math.pi:
             self.phase -= 2.0 * math.pi
+            
+        # OSC2の位相更新（デチューン適用）
+        osc2_phase_inc = (2.0 * math.pi * osc2_freq) / SAMPLE_RATE
+        self.osc2_phase += osc2_phase_inc
+        if self.osc2_phase >= 2.0 * math.pi:
+            self.osc2_phase -= 2.0 * math.pi
+            
+        # ノイズ生成
         if self.noise_type == "white":
             noise = random.uniform(-1, 1)
         elif self.noise_type == "pink":
@@ -148,8 +215,10 @@ class SimpleSynth:
             self.pink_b6 = white * 0.115926
         else:
             noise = 0.0
-        mixed_wave = (1 - self.noise_mix) * waveform + self.noise_mix * noise
-        return mixed_wave
+            
+        # 最終ミックス（オシレーター + ノイズ）
+        final_wave = (1 - self.noise_mix) * mixed_waveform + self.noise_mix * noise
+        return final_wave
 
     def filter_process(self, x: float, cutoff: float) -> float:
         if cutoff < 20:
@@ -169,6 +238,28 @@ class SimpleSynth:
             self.y_prev = out
             return out
 
+    def osc2_filter_process(self, x: float, cutoff: float) -> float:
+        """OSC2専用フィルター処理"""
+        if cutoff < 20:
+            cutoff = 20
+        elif cutoff > SAMPLE_RATE / 2:
+            cutoff = SAMPLE_RATE / 2
+        smoothing_factor = 0.01
+        self.osc2_smoothed_cutoff += smoothing_factor * (cutoff - self.osc2_smoothed_cutoff)
+        cutoff_used = self.osc2_smoothed_cutoff
+        if self.osc2_filter_resonance > 0 and self.osc2_filter is not None:
+            self.osc2_filter.set_cutoff(cutoff_used)
+            self.osc2_filter.set_q(self.osc2_filter_resonance)
+            return self.osc2_filter.process(x)
+        else:
+            # シンプルなローパスフィルター（OSC2専用の状態変数が必要）
+            if not hasattr(self, 'osc2_y_prev'):
+                self.osc2_y_prev = 0.0
+            alpha = 1.0 - math.exp(-2.0 * math.pi * cutoff_used / SAMPLE_RATE)
+            out = alpha * x + (1.0 - alpha) * self.osc2_y_prev
+            self.osc2_y_prev = out
+            return out
+
 class Voice:
     def __init__(self, note_number: int, master_params: dict, sample_rate=SAMPLE_RATE):
         self.note_number = note_number
@@ -179,6 +270,10 @@ class Voice:
                            master_params.get("release", 0.5))
         self.synth.set_cutoff(master_params.get("cutoff", 1000.0))
         self.synth.set_osc_type(master_params.get("osc_type", "sine"))
+        self.synth.set_osc2_type(master_params.get("osc2_type", "sine"))
+        self.synth.set_osc2_level(master_params.get("osc2_level", 0.5))
+        self.synth.set_osc2_detune(master_params.get("osc2_detune", 0.0))
+        self.synth.set_osc_mix(master_params.get("osc_mix", 0.5))
         self.synth.set_resonance(master_params.get("resonance", 0.0))
         self.synth.set_lfo_rate(master_params.get("lfo_rate", 5.0))
         self.synth.set_lfo_depth(master_params.get("lfo_depth", 0.0))
@@ -210,6 +305,11 @@ class PolySynth:
         self.release = 0.5
         self.cutoff = 1000.0
         self.osc_type = "sine"
+        # OSC2関連パラメーター
+        self.osc2_type = "sine"
+        self.osc2_level = 0.5
+        self.osc2_detune = 0.0
+        self.osc_mix = 0.5
         self.resonance = 0.0
         self.lfo_rate = 5.0
         self.lfo_depth = 0.0
@@ -222,6 +322,10 @@ class PolySynth:
             voice.synth.set_adsr(self.attack, self.decay, self.sustain, self.release)
             voice.synth.set_cutoff(self.cutoff)
             voice.synth.set_osc_type(self.osc_type)
+            voice.synth.set_osc2_type(self.osc2_type)
+            voice.synth.set_osc2_level(self.osc2_level)
+            voice.synth.set_osc2_detune(self.osc2_detune)
+            voice.synth.set_osc_mix(self.osc_mix)
             voice.synth.set_resonance(self.resonance)
             voice.synth.set_lfo_rate(self.lfo_rate)
             voice.synth.set_lfo_depth(self.lfo_depth)
@@ -241,6 +345,14 @@ class PolySynth:
         self.cutoff = c; self.update_parameters()
     def set_osc_type(self, osc: str):
         self.osc_type = osc; self.update_parameters()
+    def set_osc2_type(self, osc2: str):
+        self.osc2_type = osc2; self.update_parameters()
+    def set_osc2_level(self, level: float):
+        self.osc2_level = level; self.update_parameters()
+    def set_osc2_detune(self, detune: float):
+        self.osc2_detune = detune; self.update_parameters()
+    def set_osc_mix(self, mix: float):
+        self.osc_mix = mix; self.update_parameters()
     def set_resonance(self, res: float):
         self.resonance = res; self.update_parameters()
     def set_lfo_rate(self, rate: float):
@@ -253,6 +365,12 @@ class PolySynth:
         self.duty_cycle = duty; self.update_parameters()
     def set_noise_type(self, ntype: str):
         self.noise_type = ntype; self.update_parameters()
+    def set_osc2_filter_cutoff(self, cutoff: float):
+        for voice in self.voices:
+            voice.synth.set_osc2_filter_cutoff(cutoff)
+    def set_osc2_filter_resonance(self, res: float):
+        for voice in self.voices:
+            voice.synth.set_osc2_filter_resonance(res)
 
     def note_on(self, note_number: int):
         for voice in self.voices:
@@ -266,6 +384,10 @@ class PolySynth:
             "release": self.release,
             "cutoff": self.cutoff,
             "osc_type": self.osc_type,
+            "osc2_type": self.osc2_type,
+            "osc2_level": self.osc2_level,
+            "osc2_detune": self.osc2_detune,
+            "osc_mix": self.osc_mix,
             "resonance": self.resonance,
             "lfo_rate": self.lfo_rate,
             "lfo_depth": self.lfo_depth,
