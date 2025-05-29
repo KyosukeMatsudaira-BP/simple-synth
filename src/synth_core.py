@@ -3,6 +3,7 @@ import math, random, time
 from enum import Enum
 from lfo import LFO, SAMPLE_RATE as LFO_SR
 from filters import ResonantLPF, SAMPLE_RATE as FILTER_SR
+from reverb import SchroederReverb
 
 SAMPLE_RATE = 44100  # 共通のサンプルレート
 
@@ -46,6 +47,11 @@ class SimpleSynth:
         # モードフラグ
         self.ring_mod_enabled = False
         self.sync_enabled = False
+        
+        # リバーブエフェクト
+        self.reverb = SchroederReverb(SAMPLE_RATE)
+        self.reverb_enabled = False
+        
         
 
         self.noise_mix = 0.0
@@ -421,6 +427,9 @@ class PolySynth:
         # モードフラグ
         self.ring_mod_enabled = False
         self.sync_enabled = False
+        # リバーブエフェクト
+        self.reverb = SchroederReverb(SAMPLE_RATE)
+        self.reverb_enabled = False
 
     def update_parameters(self):
         for voice in self.voices:
@@ -559,6 +568,31 @@ class PolySynth:
             if voice.note_number == note_number and voice.active:
                 voice.note_off()
 
+    # リバーブ関連メソッド
+    def set_reverb_enabled(self, enabled: bool):
+        """リバーブの有効/無効を設定"""
+        self.reverb_enabled = enabled
+    
+    def set_reverb_room_size(self, room_size: float):
+        """リバーブの部屋サイズを設定"""
+        self.reverb.set_room_size(room_size)
+    
+    def set_reverb_damping(self, damping: float):
+        """リバーブのダンピングを設定"""
+        self.reverb.set_damping(damping)
+    
+    def set_reverb_wet_level(self, wet_level: float):
+        """リバーブのウェットレベルを設定"""
+        self.reverb.set_wet_level(wet_level)
+    
+    def set_reverb_dry_level(self, dry_level: float):
+        """リバーブのドライレベルを設定"""
+        self.reverb.set_dry_level(dry_level)
+    
+    def set_reverb_delay_time(self, comb_index: int, delay_ms: float):
+        """特定のコムフィルターのディレイタイムを設定"""
+        self.reverb.set_delay_time(comb_index, delay_ms)
+
     def process(self) -> float:
         sample_sum = 0.0
         active_voices = []
@@ -567,4 +601,12 @@ class PolySynth:
             if voice.active:
                 active_voices.append(voice)
         self.voices = active_voices
-        return sample_sum / max(1, self.max_voices)
+        
+        # 基本的な音量正規化
+        dry_signal = sample_sum / max(1, self.max_voices)
+        
+        # リバーブ処理
+        if self.reverb_enabled:
+            return self.reverb.process(dry_signal)
+        else:
+            return dry_signal

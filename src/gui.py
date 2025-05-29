@@ -6,30 +6,9 @@ from tkinter import ttk
 import threading
 from synth_core import PolySynth, SAMPLE_RATE, SynthMode
 from audio_engine import waveform_buffer, buffer_lock, WAVEFORM_BUFFER_SIZE
+from presets import default_presets
 
-# 既定のプリセット（上書き不可）
-default_presets = {
-    1: {"attack": 1.0, "decay": 1.0, "sustain": 0.8, "release": 2.0,
-        "cutoff": 800, "osc_type": "sine", "resonance": 0.0,
-        "lfo_rate": 3.0, "lfo_depth": 0.0, "noise_mix": 0.0,
-        "duty_cycle": 0.5, "noise_type": "white"},
-    2: {"attack": 0.16, "decay": 0.0, "sustain": 1.0, "release": 0.0,
-        "cutoff": 2651, "osc_type": "square", "resonance": 10.0,
-        "lfo_rate": 5.7, "lfo_depth": 0.008, "noise_mix": 0.09,
-        "duty_cycle": 0.71, "noise_type": "pink"},
-    3: {"attack": 0.01, "decay": 0.05, "sustain": 0.8, "release": 0.2,
-        "cutoff": 400, "osc_type": "square", "resonance": 3.0,
-        "lfo_rate": 2.0, "lfo_depth": 0.01, "noise_mix": 0.2,
-        "duty_cycle": 0.3, "noise_type": "white"},
-    4: {"attack": 0.2, "decay": 0.3, "sustain": 0.6, "release": 1.0,
-        "cutoff": 1500, "osc_type": "triangle", "resonance": 1.0,
-        "lfo_rate": 4.0, "lfo_depth": 0.03, "noise_mix": 0.7,
-        "duty_cycle": 0.5, "noise_type": "pink"},
-    5: {"attack": 0.01, "decay": 0.2, "sustain": 0.0, "release": 0.5,
-        "cutoff": 2500, "osc_type": "sawtooth", "resonance": 0.5,
-        "lfo_rate": 6.0, "lfo_depth": 0.01, "noise_mix": 0.1,
-        "duty_cycle": 0.5, "noise_type": "white"}
-}
+# プリセットデータをインポート
 presets = default_presets.copy()
 
 class SynthGUI(tk.Tk):
@@ -61,6 +40,10 @@ class SynthGUI(tk.Tk):
         self.active_keys = set()
         self.after(50, self.update_waveform)
         self.after(100, self.update_spectrum)
+    
+    def toggle_reverb(self):
+        """リバーブのオンオフを切り替え"""
+        self.poly_synth.set_reverb_enabled(self.reverb_enabled.get())
     
     def detune_decrease(self):
         """デチューン値を減少"""
@@ -408,18 +391,80 @@ class SynthGUI(tk.Tk):
                                command=lambda val: self.poly_synth.set_fm_modulation_index(float(val)))
         index_slider.grid(row=1, column=1, padx=2, pady=1)
         
+        # リバーブエフェクト
+        reverb_frame = ttk.LabelFrame(parent, text="リバーブ（シュレーダーアルゴリズム）", style="My.TLabelframe")
+        reverb_frame.pack(fill="x", pady=3)
+        
+        # リバーブオンオフ
+        self.reverb_enabled = tk.BooleanVar(value=False)
+        reverb_check = tk.Checkbutton(reverb_frame, text="リバーブ有効", 
+                                     variable=self.reverb_enabled,
+                                     command=self.toggle_reverb,
+                                     font=("Arial", self.font_size, "bold"),
+                                     fg="green", selectcolor="lightgreen")
+        reverb_check.pack(padx=5, pady=2)
+        
+        # リバーブパラメーター
+        reverb_params_frame = ttk.Frame(reverb_frame)
+        reverb_params_frame.pack(padx=5, pady=5)
+        
+        # 部屋サイズ
+        ttk.Label(reverb_params_frame, text="部屋サイズ", style="My.TLabel").grid(row=0, column=0, sticky="w", padx=2, pady=1)
+        self.reverb_room_size_var = tk.DoubleVar(value=0.8)
+        room_slider = tk.Scale(reverb_params_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
+                              length=120, variable=self.reverb_room_size_var, font=("Arial", self.font_size-1),
+                              command=lambda val: self.poly_synth.set_reverb_room_size(float(val)))
+        room_slider.grid(row=0, column=1, padx=2, pady=1)
+        # 初期値を設定
+        self.poly_synth.set_reverb_room_size(0.8)
+        
+        # ウェットレベル
+        ttk.Label(reverb_params_frame, text="ウェット", style="My.TLabel").grid(row=0, column=2, sticky="w", padx=2, pady=1)
+        self.reverb_wet_var = tk.DoubleVar(value=0.3)
+        wet_slider = tk.Scale(reverb_params_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
+                             length=120, variable=self.reverb_wet_var, font=("Arial", self.font_size-1),
+                             command=lambda val: self.poly_synth.set_reverb_wet_level(float(val)))
+        wet_slider.grid(row=0, column=3, padx=2, pady=1)
+        # 初期値を設定
+        self.poly_synth.set_reverb_wet_level(0.3)
+        
+        # ドライレベル
+        ttk.Label(reverb_params_frame, text="ドライ", style="My.TLabel").grid(row=1, column=0, sticky="w", padx=2, pady=1)
+        self.reverb_dry_var = tk.DoubleVar(value=0.7)
+        dry_slider = tk.Scale(reverb_params_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
+                             length=120, variable=self.reverb_dry_var, font=("Arial", self.font_size-1),
+                             command=lambda val: self.poly_synth.set_reverb_dry_level(float(val)))
+        dry_slider.grid(row=1, column=1, padx=2, pady=1)
+        # 初期値を設定
+        self.poly_synth.set_reverb_dry_level(0.7)
+        
+        # ディレイタイム調整（コムフィルター1）
+        ttk.Label(reverb_params_frame, text="ディレイ1(ms)", style="My.TLabel").grid(row=1, column=2, sticky="w", padx=2, pady=1)
+        self.reverb_delay1_var = tk.DoubleVar(value=29.7)
+        delay1_slider = tk.Scale(reverb_params_frame, from_=10.0, to=100.0, resolution=0.1, orient=tk.HORIZONTAL,
+                                length=120, variable=self.reverb_delay1_var, font=("Arial", self.font_size-1),
+                                command=lambda val: self.poly_synth.set_reverb_delay_time(0, float(val)))
+        delay1_slider.grid(row=1, column=3, padx=2, pady=1)
+        
         # プリセット
         preset_frame = ttk.LabelFrame(parent, text="プリセット", style="My.TLabelframe")
         preset_frame.pack(fill="x", pady=3)
         
-        # プリセットボタン
+        # プリセットボタン（10個、2行に配置）
         button_frame = ttk.Frame(preset_frame)
         button_frame.pack(padx=5, pady=5)
         
+        # 1行目：プリセット1-5
         for i in range(1, 6):
             btn = ttk.Button(button_frame, text=f"プリセット{i}", width=12,
                            command=lambda slot=i: self.load_preset_slot(slot), style="My.TButton")
             btn.grid(row=0, column=i-1, padx=3, pady=2)
+        
+        # 2行目：プリセット6-10
+        for i in range(6, 11):
+            btn = ttk.Button(button_frame, text=f"プリセット{i}", width=12,
+                           command=lambda slot=i: self.load_preset_slot(slot), style="My.TButton")
+            btn.grid(row=1, column=i-6, padx=3, pady=2)
         
         # リセットボタン
         reset_btn = ttk.Button(preset_frame, text="リセット", command=self.reset_to_sine, style="My.TButton")
@@ -525,6 +570,26 @@ class SynthGUI(tk.Tk):
             self.poly_synth.set_duty_cycle(preset["duty_cycle"])
             self.poly_synth.set_noise_type(preset["noise_type"])
             
+            # OSC2パラメーター
+            if "osc2_type" in preset:
+                self.poly_synth.set_osc2_type(preset["osc2_type"])
+            if "osc2_detune" in preset:
+                self.poly_synth.set_osc2_detune(preset["osc2_detune"])
+            if "osc_mix" in preset:
+                self.poly_synth.set_osc_mix(preset["osc_mix"])
+            
+            # FM合成パラメーター
+            if "fm_modulator_ratio" in preset:
+                self.poly_synth.set_fm_modulator_ratio(preset["fm_modulator_ratio"])
+            if "fm_modulation_index" in preset:
+                self.poly_synth.set_fm_modulation_index(preset["fm_modulation_index"])
+            
+            # リング変調とシンク
+            if "ring_mod_enabled" in preset:
+                self.poly_synth.set_ring_mod_enabled(preset["ring_mod_enabled"])
+            if "sync_enabled" in preset:
+                self.poly_synth.set_sync_enabled(preset["sync_enabled"])
+            
             # UI更新
             self.attack_var.set(preset["attack"])
             self.decay_var.set(preset["decay"])
@@ -540,6 +605,26 @@ class SynthGUI(tk.Tk):
             self.duty_cycle_var.set(preset["duty_cycle"])
             inv_noise_map = {v: k for k, v in self.noise_type_map.items()}
             self.noise_type_var.set(inv_noise_map[preset["noise_type"]])
+            
+            # OSC2 UI更新
+            if "osc2_type" in preset:
+                self.osc2_var.set(inv_osc_map[preset["osc2_type"]])
+            if "osc2_detune" in preset:
+                self.osc2_detune_var.set(preset["osc2_detune"])
+            if "osc_mix" in preset:
+                self.osc_mix_var.set(preset["osc_mix"])
+            
+            # FM合成 UI更新
+            if "fm_modulator_ratio" in preset:
+                self.fm_modulator_ratio_var.set(preset["fm_modulator_ratio"])
+            if "fm_modulation_index" in preset:
+                self.fm_modulation_index_var.set(preset["fm_modulation_index"])
+            
+            # モード UI更新
+            if "ring_mod_enabled" in preset:
+                self.ring_mod_enabled.set(preset["ring_mod_enabled"])
+            if "sync_enabled" in preset:
+                self.sync_enabled.set(preset["sync_enabled"])
 
     def on_note_press(self, note):
         self.poly_synth.note_on(note)
