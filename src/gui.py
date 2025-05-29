@@ -4,7 +4,7 @@ import numpy.fft as fft
 import tkinter as tk
 from tkinter import ttk
 import threading
-from synth_core import PolySynth, SAMPLE_RATE
+from synth_core import PolySynth, SAMPLE_RATE, SynthMode
 from audio_engine import waveform_buffer, buffer_lock, WAVEFORM_BUFFER_SIZE
 
 # 既定のプリセット（上書き不可）
@@ -43,7 +43,7 @@ class SynthGUI(tk.Tk):
         self.resizable(True, True)  # 全画面表示可能
         
         # 文字サイズを読みやすく
-        self.font_size = 11
+        self.font_size = 12
         
         # スタイル設定
         self.style = ttk.Style(self)
@@ -61,6 +61,66 @@ class SynthGUI(tk.Tk):
         self.active_keys = set()
         self.after(50, self.update_waveform)
         self.after(100, self.update_spectrum)
+    
+    def detune_decrease(self):
+        """デチューン値を減少"""
+        try:
+            step = self.detune_step_var.get()
+            current = self.osc2_detune_var.get()
+            new_value = max(-1200, current - step)  # 下限チェック
+            self.osc2_detune_var.set(new_value)
+            self.poly_synth.set_osc2_detune(new_value)
+        except tk.TclError:
+            # 無効な値の場合はデフォルトステップを使用
+            current = self.osc2_detune_var.get()
+            new_value = max(-1200, current - 1.0)
+            self.osc2_detune_var.set(new_value)
+            self.poly_synth.set_osc2_detune(new_value)
+    
+    def detune_increase(self):
+        """デチューン値を増加"""
+        try:
+            step = self.detune_step_var.get()
+            current = self.osc2_detune_var.get()
+            new_value = min(1200, current + step)  # 上限チェック
+            self.osc2_detune_var.set(new_value)
+            self.poly_synth.set_osc2_detune(new_value)
+        except tk.TclError:
+            # 無効な値の場合はデフォルトステップを使用
+            current = self.osc2_detune_var.get()
+            new_value = min(1200, current + 1.0)
+            self.osc2_detune_var.set(new_value)
+            self.poly_synth.set_osc2_detune(new_value)
+
+    def toggle_ring_modulation(self):
+        """リング変調のオンオフを切り替え"""
+        if self.ring_mod_enabled.get():
+            # リング変調をオン
+            self.poly_synth.ring_mod_enabled = True
+            self.poly_synth.set_ring_mod_enabled(True)
+            # シンクを無効化
+            self.sync_enabled.set(False)
+            self.poly_synth.sync_enabled = False
+            self.poly_synth.set_sync_enabled(False)
+        else:
+            # リング変調をオフ
+            self.poly_synth.ring_mod_enabled = False
+            self.poly_synth.set_ring_mod_enabled(False)
+
+    def toggle_oscillator_sync(self):
+        """オシレーターシンクのオンオフを切り替え"""
+        if self.sync_enabled.get():
+            # シンクをオン
+            self.poly_synth.sync_enabled = True
+            self.poly_synth.set_sync_enabled(True)
+            # リング変調を無効化
+            self.ring_mod_enabled.set(False)
+            self.poly_synth.ring_mod_enabled = False
+            self.poly_synth.set_ring_mod_enabled(False)
+        else:
+            # シンクをオフ
+            self.poly_synth.sync_enabled = False
+            self.poly_synth.set_sync_enabled(False)
 
     def create_main_layout(self):
         main_frame = ttk.Frame(self)
@@ -110,26 +170,28 @@ class SynthGUI(tk.Tk):
         self.create_keyboard(main_frame)
 
     def create_osc1_controls(self, parent):
-        frame = ttk.LabelFrame(parent, text="OSC1", style="My.TLabelframe")
+        frame = ttk.LabelFrame(parent, text="オシレーター1", style="My.TLabelframe")
         frame.pack(fill="x", pady=2)
         
         # 波形選択
-        ttk.Label(frame, text="波形", style="My.TLabel").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        ttk.Label(frame, text="波形", style="My.TLabel").grid(row=0, column=0, sticky="w", padx=2, pady=1)
         self.osc_types = ["サイン波", "三角波", "矩形波", "ノコギリ波"]
         self.osc_type_map = {"サイン波": "sine", "三角波": "triangle", "矩形波": "square", "ノコギリ波": "sawtooth"}
         self.osc_var = tk.StringVar(value="サイン波")
         osc_combo = ttk.Combobox(frame, textvariable=self.osc_var, values=self.osc_types, 
                                 width=12, font=("Arial", self.font_size), state="readonly")
-        osc_combo.grid(row=0, column=1, padx=2, pady=2)
+        osc_combo.grid(row=0, column=1, padx=2, pady=1)
         osc_combo.bind("<<ComboboxSelected>>", lambda e: self.poly_synth.set_osc_type(self.osc_type_map[self.osc_var.get()]))
         
+
+        
         # デューティーサイクル
-        ttk.Label(frame, text="デューティー", style="My.TLabel").grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        ttk.Label(frame, text="デューティー", style="My.TLabel").grid(row=2, column=0, sticky="w", padx=2, pady=1)
         self.duty_cycle_var = tk.DoubleVar(value=0.5)
         duty_slider = tk.Scale(frame, from_=0.1, to=0.9, resolution=0.01, orient=tk.HORIZONTAL,
                               length=180, variable=self.duty_cycle_var, font=("Arial", self.font_size),
                               command=lambda val: self.poly_synth.set_duty_cycle(float(val)))
-        duty_slider.grid(row=1, column=1, padx=2, pady=2)
+        duty_slider.grid(row=2, column=1, padx=2, pady=1)
 
     def create_filter_controls(self, parent):
         frame = ttk.LabelFrame(parent, text="フィルター", style="My.TLabelframe")
@@ -241,21 +303,36 @@ class SynthGUI(tk.Tk):
         osc2_combo.grid(row=0, column=1, padx=2, pady=1)
         osc2_combo.bind("<<ComboboxSelected>>", lambda e: self.poly_synth.set_osc2_type(self.osc_type_map[self.osc2_var.get()]))
         
-        # レベル
-        ttk.Label(frame, text="レベル", style="My.TLabel").grid(row=1, column=0, sticky="w", padx=2, pady=1)
-        self.osc2_level_var = tk.DoubleVar(value=0.5)
-        level_slider = tk.Scale(frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL,
-                               length=180, variable=self.osc2_level_var, font=("Arial", self.font_size),
-                               command=lambda val: self.poly_synth.set_osc2_level(float(val)))
-        level_slider.grid(row=1, column=1, padx=2, pady=1)
+
         
-        # デチューン
+        # デチューン（範囲を大幅に拡張）
         ttk.Label(frame, text="デチューン（セント）", style="My.TLabel").grid(row=2, column=0, sticky="w", padx=2, pady=1)
+        
+        # デチューンコントロールフレーム
+        detune_control_frame = ttk.Frame(frame)
+        detune_control_frame.grid(row=2, column=1, padx=2, pady=1, sticky="w")
+        
+        # デチューンスライダー
         self.osc2_detune_var = tk.DoubleVar(value=0.0)
-        detune_slider = tk.Scale(frame, from_=-50, to=50, resolution=1, orient=tk.HORIZONTAL,
+        detune_slider = tk.Scale(detune_control_frame, from_=-1200, to=1200, resolution=1, orient=tk.HORIZONTAL,
                                 length=180, variable=self.osc2_detune_var, font=("Arial", self.font_size),
                                 command=lambda val: self.poly_synth.set_osc2_detune(float(val)))
-        detune_slider.grid(row=2, column=1, padx=2, pady=1)
+        detune_slider.grid(row=0, column=0, columnspan=4)
+        
+        # 微調整ステップ入力
+        ttk.Label(detune_control_frame, text="ステップ:", font=("Arial", self.font_size-2)).grid(row=1, column=0, sticky="w")
+        self.detune_step_var = tk.DoubleVar(value=1.0)
+        step_entry = tk.Entry(detune_control_frame, textvariable=self.detune_step_var, width=4, font=("Arial", self.font_size-1))
+        step_entry.grid(row=1, column=1, padx=2)
+        
+        # 微調整ボタン
+        minus_btn = tk.Button(detune_control_frame, text="-", width=2, font=("Arial", self.font_size-1),
+                             command=self.detune_decrease)
+        minus_btn.grid(row=1, column=2, padx=1)
+        
+        plus_btn = tk.Button(detune_control_frame, text="+", width=2, font=("Arial", self.font_size-1),
+                            command=self.detune_increase)
+        plus_btn.grid(row=1, column=3, padx=1)
         
         # ミックス
         ttk.Label(frame, text="ミックス（0=OSC1, 1=OSC2）", style="My.TLabel").grid(row=3, column=0, sticky="w", padx=2, pady=1)
@@ -265,20 +342,7 @@ class SynthGUI(tk.Tk):
                              command=lambda val: self.poly_synth.set_osc_mix(float(val)))
         mix_slider.grid(row=3, column=1, padx=2, pady=1)
         
-        # OSC2専用フィルター
-        ttk.Label(frame, text="OSC2カットオフ（Hz）", style="My.TLabel").grid(row=4, column=0, sticky="w", padx=2, pady=1)
-        self.osc2_filter_cutoff_var = tk.DoubleVar(value=1000.0)
-        osc2_cutoff_slider = tk.Scale(frame, from_=20, to=5000, resolution=1, orient=tk.HORIZONTAL,
-                                     length=180, variable=self.osc2_filter_cutoff_var, font=("Arial", self.font_size),
-                                     command=lambda val: self.poly_synth.set_osc2_filter_cutoff(float(val)))
-        osc2_cutoff_slider.grid(row=4, column=1, padx=2, pady=1)
-        
-        ttk.Label(frame, text="OSC2レゾナンス", style="My.TLabel").grid(row=5, column=0, sticky="w", padx=2, pady=1)
-        self.osc2_filter_resonance_var = tk.DoubleVar(value=0.0)
-        osc2_res_slider = tk.Scale(frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL,
-                                  length=180, variable=self.osc2_filter_resonance_var, font=("Arial", self.font_size),
-                                  command=lambda val: self.poly_synth.set_osc2_filter_resonance(float(val)))
-        osc2_res_slider.grid(row=5, column=1, padx=2, pady=1)
+
 
     def create_displays(self, parent):
         # 波形表示（見やすいサイズ）
@@ -294,11 +358,62 @@ class SynthGUI(tk.Tk):
         self.spec_canvas.pack(padx=5, pady=5)
 
     def create_preset_controls(self, parent):
-        frame = ttk.LabelFrame(parent, text="プリセット", style="My.TLabelframe")
-        frame.pack(fill="x", pady=3)
+        # 合成モード選択（コンパクト化）
+        mode_frame = ttk.LabelFrame(parent, text="合成モード", style="My.TLabelframe")
+        mode_frame.pack(fill="x", pady=2)
+        
+        # 簡潔な説明
+        ttk.Label(mode_frame, text="優先順位: FM > シンク > リング変調 > 通常ミックス", 
+                 style="My.TLabel", font=("Arial", 9)).pack(padx=3, pady=1)
+        
+        # モード設定ボタン
+        mode_buttons_frame = ttk.Frame(mode_frame)
+        mode_buttons_frame.pack(padx=3, pady=3)
+        
+        # リング変調オンオフボタン
+        self.ring_mod_enabled = tk.BooleanVar(value=False)
+        self.ring_check = tk.Checkbutton(mode_buttons_frame, text="リング変調", 
+                                        variable=self.ring_mod_enabled,
+                                        command=self.toggle_ring_modulation,
+                                        font=("Arial", self.font_size, "bold"),
+                                        fg="red", selectcolor="lightcoral")
+        self.ring_check.grid(row=0, column=0, padx=10, pady=2)
+        
+        # シンクオンオフボタン
+        self.sync_enabled = tk.BooleanVar(value=False)
+        self.sync_check = tk.Checkbutton(mode_buttons_frame, text="オシレーターシンク", 
+                                        variable=self.sync_enabled,
+                                        command=self.toggle_oscillator_sync,
+                                        font=("Arial", self.font_size, "bold"),
+                                        fg="blue", selectcolor="lightblue")
+        self.sync_check.grid(row=0, column=1, padx=10, pady=2)
+        
+        # FM合成パラメーター
+        fm_frame = ttk.LabelFrame(parent, text="FM合成", style="My.TLabelframe")
+        fm_frame.pack(fill="x", pady=3)
+        
+        # モジュレーター比（キャリアを1とした時の比率）
+        ttk.Label(fm_frame, text="モジュレーター比", style="My.TLabel").grid(row=0, column=0, sticky="w", padx=2, pady=1)
+        self.fm_modulator_ratio_var = tk.DoubleVar(value=1.0)
+        modulator_slider = tk.Scale(fm_frame, from_=0.1, to=8.0, resolution=0.1, orient=tk.HORIZONTAL,
+                                   length=180, variable=self.fm_modulator_ratio_var, font=("Arial", self.font_size),
+                                   command=lambda val: self.poly_synth.set_fm_modulator_ratio(float(val)))
+        modulator_slider.grid(row=0, column=1, padx=2, pady=1)
+        
+        # 変調インデックス
+        ttk.Label(fm_frame, text="変調インデックス", style="My.TLabel").grid(row=1, column=0, sticky="w", padx=2, pady=1)
+        self.fm_modulation_index_var = tk.DoubleVar(value=0.0)
+        index_slider = tk.Scale(fm_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL,
+                               length=180, variable=self.fm_modulation_index_var, font=("Arial", self.font_size),
+                               command=lambda val: self.poly_synth.set_fm_modulation_index(float(val)))
+        index_slider.grid(row=1, column=1, padx=2, pady=1)
+        
+        # プリセット
+        preset_frame = ttk.LabelFrame(parent, text="プリセット", style="My.TLabelframe")
+        preset_frame.pack(fill="x", pady=3)
         
         # プリセットボタン
-        button_frame = ttk.Frame(frame)
+        button_frame = ttk.Frame(preset_frame)
         button_frame.pack(padx=5, pady=5)
         
         for i in range(1, 6):
@@ -307,7 +422,7 @@ class SynthGUI(tk.Tk):
             btn.grid(row=0, column=i-1, padx=3, pady=2)
         
         # リセットボタン
-        reset_btn = ttk.Button(frame, text="リセット", command=self.reset_to_sine, style="My.TButton")
+        reset_btn = ttk.Button(preset_frame, text="リセット", command=self.reset_to_sine, style="My.TButton")
         reset_btn.pack(pady=5)
 
     def create_keyboard(self, parent):
@@ -355,11 +470,9 @@ class SynthGUI(tk.Tk):
     def reset_to_sine(self):
         self.poly_synth.set_osc_type("sine")
         self.poly_synth.set_osc2_type("sine")
-        self.poly_synth.set_osc2_level(0.5)
         self.poly_synth.set_osc2_detune(0.0)
         self.poly_synth.set_osc_mix(0.5)
-        self.poly_synth.set_osc2_filter_cutoff(1000.0)
-        self.poly_synth.set_osc2_filter_resonance(0.0)
+
         self.poly_synth.set_noise_mix(0.0)
         self.poly_synth.set_lfo_depth(0.0)
         self.poly_synth.set_resonance(0.0)
@@ -368,15 +481,17 @@ class SynthGUI(tk.Tk):
         self.poly_synth.set_sustain(0.7)
         self.poly_synth.set_release(0.5)
         self.poly_synth.set_cutoff(1000)
+        # FM合成リセット
+        self.poly_synth.set_fm_carrier_ratio(1.0)
+        self.poly_synth.set_fm_modulator_ratio(1.0)
+        self.poly_synth.set_fm_modulation_index(0.0)
         
         # UI変数リセット
         self.osc_var.set("サイン波")
         self.osc2_var.set("サイン波")
-        self.osc2_level_var.set(0.5)
         self.osc2_detune_var.set(0.0)
         self.osc_mix_var.set(0.5)
-        self.osc2_filter_cutoff_var.set(1000.0)
-        self.osc2_filter_resonance_var.set(0.0)
+
         self.noise_mix_var.set(0.0)
         self.lfo_depth_var.set(0.0)
         self.resonance_var.set(0.0)
@@ -387,6 +502,12 @@ class SynthGUI(tk.Tk):
         self.cutoff_var.set(1000)
         self.lfo_rate_var.set(5.0)
         self.duty_cycle_var.set(0.5)
+        # FM合成UIリセット
+        self.fm_modulator_ratio_var.set(1.0)
+        self.fm_modulation_index_var.set(0.0)
+        # モードリセット
+        self.ring_mod_enabled.set(False)
+        self.sync_enabled.set(False)
 
     def load_preset_slot(self, slot: int):
         if slot in presets:
